@@ -1,16 +1,16 @@
-from typing import Optional
-from aiohttp import ClientTimeout, ClientSession
+import aiohttp
+from bs4 import BeautifulSoup
 
-class AsyncScraper:
-    def __init__(self):
-        self.session = ClientSession(headers={
-            "User-Agent": 
-                "Mozilla/5.0 (EthicalScraper/1.0)"
-            },
-            timeout=ClientTimeout(total=10)
-        )
-        pass
-
-    async def fetch(self, url:str) -> Optional[str]:
-        pass
-
+async def scrape_product(url: str, headers: dict, timeout: int, proxy: str = None) -> dict:
+    async with aiohttp.ClientSession(headers=headers) as session:
+        async with session.get(
+            url, 
+            timeout=timeout,
+            proxy=proxy
+        ) as response:
+            html = await response.text()
+            soup = BeautifulSoup(html, "lxml")
+            
+        return {
+            "title": soup.select_one("#productTitle").text.strip() if soup.select_one("#productTitle") else "Title not found",
+        }
