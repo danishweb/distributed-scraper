@@ -1,7 +1,7 @@
 import random
 import aiohttp
 import asyncio
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from config.settings import PROXY_URLS, HEADERS
 
 class ProxyManager:
@@ -48,7 +48,7 @@ class ProxyManager:
         except Exception as e:
             print(f"Error updating proxy file: {e}")
 
-    async def validate_proxies(self):
+    async def validate_proxies(self) -> Dict[str, Any]:
         """Validate all proxies and keep only the working ones"""
         if not self.proxies:
             print("No proxies available in proxies.txt")
@@ -67,3 +67,7 @@ class ProxyManager:
         else:
             await self.update_proxy_file(self.working_proxies)
             print(f"Found {len(self.working_proxies)} working proxies")
+            return {
+                "message": "Proxy validation completed",
+                "working_proxies": len(self.working_proxies)
+            }

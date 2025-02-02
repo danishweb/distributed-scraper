@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 
 from src.storage.redis_client import RedisClient
 from src.core.scraper import scrape_product
