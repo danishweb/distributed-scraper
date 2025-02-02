@@ -1,73 +1,109 @@
 import random
 import aiohttp
-import asyncio
+from datetime import datetime
 from typing import Any, Dict, List, Optional
-from config.settings import PROXY_URLS, HEADERS
+from config.settings import HEADERS
+from src.repositories.proxy_repo import ProxyRepository
+from src.models.proxy import ProxyCreate
 
 class ProxyManager:
     def __init__(self):
-        self.proxies: List[str] = []
-        self.working_proxies: List[str] = []
-        self.proxies = [f"http://{url}" for url in PROXY_URLS if url.strip()]
+        self.repo = ProxyRepository()
     
-    def get_proxies(self) -> List[str]:
-        """Get the list of working proxies"""
-        return self.working_proxies if self.working_proxies else self.proxies
+    async def get_proxies(self) -> List[str]:
+        """Get the list of all active proxies"""
+        proxies = await self.repo.get_active_proxies()
+        return [proxy.url for proxy in proxies]
     
-    def get_proxy(self) -> Optional[str]:
-        """Get a random proxy from the list of working proxies"""
-        proxy_list = self.get_proxies()
-        if not proxy_list:
-            return None
-        return random.choice(proxy_list)
-    
-    async def check_proxy(self, proxy: str) -> bool:
-        """Check if the proxy is working using aiohttp"""
+    async def check_proxy(self, proxy_url: str) -> tuple[bool, float]:
+        """Check if the proxy is working using aiohttp and return status and response time"""
+        start_time = datetime.utcnow()
         try:
             timeout = aiohttp.ClientTimeout(total=10)
             async with aiohttp.ClientSession(headers=HEADERS, timeout=timeout) as session:
                 async with session.get(
                     "https://httpbin.org/ip",
-                    proxy=proxy,
+                    proxy=proxy_url,
                     ssl=False
                 ) as response:
-                    return response.status == 200
+                    is_working = response.status == 200
+                    response_time = (datetime.utcnow() - start_time).total_seconds()
+                    return is_working, response_time
         except:
-            return False
-    
-    async def update_proxy_file(self, proxies: List[str]):
-        """Update the proxies.txt file with working proxies"""
-        # Convert http://proxy:port back to proxy:port format
-        cleaned_proxies = [proxy.replace('http://', '') for proxy in proxies]
-        
-        try:
-            with open("proxies.txt", "w") as f:  # Use 'w' to overwrite with only working proxies
-                for proxy in cleaned_proxies:
-                    f.write(f"{proxy}\n")
-            print(f"Updated proxies.txt with {len(cleaned_proxies)} working proxies")
-        except Exception as e:
-            print(f"Error updating proxy file: {e}")
+            return False, 0.0
 
     async def validate_proxies(self) -> Dict[str, Any]:
-        """Validate all proxies and keep only the working ones"""
-        if not self.proxies:
-            print("No proxies available in proxies.txt")
-            return
+        """Validate all proxies and update their status in the database"""
+        proxies = await self.repo.find_many({})
+        if not proxies:
+            return {"message": "No proxies available in database", "working_proxies": 0}
             
-        tasks = [self.check_proxy(proxy) for proxy in self.proxies]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        working_count = 0
+        for proxy in proxies:
+            is_working, response_time = await self.check_proxy(proxy.url)
+            
+            if is_working:
+                await self.repo.record_success(proxy.id, response_time)
+                working_count += 1
+            else:
+                await self.repo.increment_failures(proxy.id, "Failed connection check")
         
-        self.working_proxies = [
-            proxy for proxy, is_working in zip(self.proxies, results)
-            if isinstance(is_working, bool) and is_working
-        ]
-        
-        if not self.working_proxies:
-            print("Warning: No working proxies found!")
-        else:
-            await self.update_proxy_file(self.working_proxies)
-            print(f"Found {len(self.working_proxies)} working proxies")
+        return {
+            "message": "Proxy validation completed",
+            "working_proxies": working_count
+        }
+
+    async def migrate_from_file(self, file_path: str = "proxies.txt") -> Dict[str, Any]:
+        """Migrate proxies from text file to MongoDB"""
+        try:
+            with open(file_path, 'r') as f:
+                proxy_lines = f.readlines()
+
+            proxies = [line.strip() for line in proxy_lines if line.strip()]
+            success_count = 0
+            error_count = 0
+            
+            for proxy_url in proxies:
+                try:
+                    if not proxy_url.startswith('http://'):
+                        proxy_url = f'http://{proxy_url}'
+                    
+                    is_working, _ = await self.check_proxy(proxy_url)
+                    if not is_working:
+                        continue
+
+                    proxy = ProxyCreate(
+                        url=proxy_url,
+                        is_active=True,
+                        blacklisted=False,
+                        failures=0,
+                        last_checked=datetime.utcnow()
+                    )
+                    await self.repo.create(proxy)
+                    success_count += 1
+                    
+                except Exception as e:
+                    error_count += 1
+                    continue
+            
             return {
-                "message": "Proxy validation completed",
-                "working_proxies": len(self.working_proxies)
+                "message": "Migration completed",
+                "total_processed": len(proxies),
+                "success_count": success_count,
+                "error_count": error_count
+            }
+                
+        except FileNotFoundError:
+            return {
+                "message": f"Error: File {file_path} not found",
+                "total_processed": 0,
+                "success_count": 0,
+                "error_count": 0
+            }
+        except Exception as e:
+            return {
+                "message": f"Error during migration: {str(e)}",
+                "total_processed": 0,
+                "success_count": 0,
+                "error_count": 0
             }
